@@ -1,0 +1,497 @@
+package com.networktools;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+
+/**
+ * ServiceMonitor - Monitors availability and response times of network services
+ */
+public class ServiceMonitor {
+    
+    private final Map<String, ServiceStatus> serviceStatuses = new HashMap<>();
+    private final int checkInterval; // in seconds
+    private final int timeout; // in milliseconds
+    private final int historySize; // number of status records to keep
+    private Timer timer;
+    private ExecutorService executor;
+    private List<ServiceMonitorListener> listeners = new ArrayList<>();
+    
+    public ServiceMonitor() {
+        this(60, 5000, 100);
+    }
+    
+    public ServiceMonitor(int checkIntervalSeconds, int timeoutMillis, int historySize) {
+        this.checkInterval = checkIntervalSeconds;
+        this.timeout = timeoutMillis;
+        this.historySize = historySize;
+        this.executor = Executors.newFixedThreadPool(5);
+    }
+    
+    public static void main(String[] args) {
+        ServiceMonitor monitor = new ServiceMonitor(30, 5000, 50);
+        
+        // Add HTTP service
+        monitor.addService("Google Web", ServiceType.HTTP, "https://www.google.com");
+        
+        // Add TCP service (e.g., a database)
+        monitor.addService("Local Database", ServiceType.TCP, "localhost:5432");
+        
+        // Add SSL service
+        monitor.addService("Secure Web", ServiceType.SSL, "github.com:443");
+        
+        // Add SMTP service
+        monitor.addService("Email Server", ServiceType.SMTP, "smtp.gmail.com:587");
+        
+        // Add custom listener
+        monitor.addListener(new ServiceMonitorListener() {
+            @Override
+            public void onServiceStatusChange(String serviceName, ServiceStatus status) {
+                System.out.println("STATUS CHANGE: " + serviceName + " is now " + 
+                        (status.isUp ? "UP" : "DOWN") + " at " + status.timestamp);
+            }
+        });
+        
+        // Start monitoring
+        monitor.startMonitoring();
+        
+        // Keep running for 5 minutes, then stop
+        try {
+            Thread.sleep(300000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            monitor.stopMonitoring();
+        }
+    }
+    
+    /**
+     * Add a service to monitor
+     * @param name Friendly name for the service
+     * @param type Service type (HTTP, TCP, etc.)
+     * @param address Service address (URL or host:port)
+     */
+    public void addService(String name, ServiceType type, String address) {
+        serviceStatuses.put(name, new ServiceStatus(name, type, address));
+        System.out.println("Added service: " + name + " (" + type + ": " + address + ")");
+    }
+    
+    /**
+     * Add a service monitor listener
+     * @param listener The listener to add
+     */
+    public void addListener(ServiceMonitorListener listener) {
+        listeners.add(listener);
+    }
+    
+    /**
+     * Start monitoring all services
+     */
+    public void startMonitoring() {
+        if (timer != null) {
+            timer.cancel();
+        }
+        
+        timer = new Timer("ServiceMonitor");
+        timer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                checkAllServices();
+            }
+        }, 0, checkInterval * 1000);
+        
+        System.out.println("Started monitoring " + serviceStatuses.size() + 
+                " services. Check interval: " + checkInterval + " seconds");
+    }
+    
+    /**
+     * Stop monitoring all services
+     */
+    public void stopMonitoring() {
+        if (timer != null) {
+            timer.cancel();
+            timer = null;
+        }
+        
+        if (executor != null) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
+        
+        System.out.println("Stopped monitoring services");
+    }
+    
+    /**
+     * Check status of all registered services
+     */
+    private void checkAllServices() {
+        System.out.println("\n=== Checking services at " + LocalDateTime.now().format(
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) + " ===");
+        
+        List<Future<?>> futures = new ArrayList<>();
+        
+        for (String serviceName : serviceStatuses.keySet()) {
+            ServiceStatus status = serviceStatuses.get(serviceName);
+            
+            futures.add(executor.submit(() -> {
+                boolean previousState = status.isUp;
+                boolean currentState;
+                long responseTime;
+                
+                // Check service based on type
+                switch (status.type) {
+                    case HTTP:
+                        HttpResult result = checkHttpService(status.address);
+                        currentState = result.isUp;
+                        responseTime = result.responseTime;
+                        status.responseCode = result.responseCode;
+                        break;
+                    case TCP:
+                        responseTime = checkTcpService(status.address);
+                        currentState = responseTime >= 0;
+                        break;
+                    case SSL:
+                        responseTime = checkSslService(status.address);
+                        currentState = responseTime >= 0;
+                        break;
+                    case SMTP:
+                        SmtpResult smtpResult = checkSmtpService(status.address);
+                        currentState = smtpResult.isUp;
+                        responseTime = smtpResult.responseTime;
+                        status.responseMessage = smtpResult.message;
+                        break;
+                    default:
+                        currentState = false;
+                        responseTime = -1;
+                }
+                
+                // Update status
+                status.isUp = currentState;
+                status.timestamp = LocalDateTime.now();
+                status.responseTime = responseTime;
+                
+                // Add to history
+                status.addToHistory(currentState, responseTime);
+                
+                // Output status
+                System.out.println(serviceName + " (" + status.type + "): " + 
+                        (status.isUp ? "UP" : "DOWN") + 
+                        (status.responseTime >= 0 ? ", Response time: " + status.responseTime + " ms" : "") +
+                        (status.responseCode > 0 ? ", Response code: " + status.responseCode : "") +
+                        (status.responseMessage != null ? ", Message: " + status.responseMessage : ""));
+                
+                // Notify listeners of status changes
+                if (previousState != currentState) {
+                    for (ServiceMonitorListener listener : listeners) {
+                        listener.onServiceStatusChange(serviceName, status);
+                    }
+                }
+            }));
+        }
+        
+        // Wait for all checks to complete
+        for (Future<?> future : futures) {
+            try {
+                future.get(timeout + 1000, TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                System.err.println("Error waiting for service check: " + e.getMessage());
+            }
+        }
+    }
+    
+    /**
+     * Check an HTTP/HTTPS service
+     * @param url The URL to check
+     * @return HTTP result
+     */
+    private HttpResult checkHttpService(String url) {
+        HttpResult result = new HttpResult();
+        HttpURLConnection connection = null;
+        
+        try {
+            URL serviceUrl = new URL(url);
+            long startTime = System.currentTimeMillis();
+            connection = (HttpURLConnection) serviceUrl.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(timeout);
+            connection.setReadTimeout(timeout);
+            
+            result.responseCode = connection.getResponseCode();
+            long endTime = System.currentTimeMillis();
+            result.responseTime = endTime - startTime;
+            
+            // Consider 2xx and 3xx codes as "up"
+            result.isUp = result.responseCode >= 200 && result.responseCode < 400;
+            
+        } catch (SocketTimeoutException e) {
+            result.isUp = false;
+            result.responseCode = -1;
+            result.responseTime = -1;
+            result.errorMessage = "Timeout";
+        } catch (IOException e) {
+            result.isUp = false;
+            result.responseCode = -1;
+            result.responseTime = -1;
+            result.errorMessage = e.getMessage();
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Check a TCP service
+     * @param address The address in format "host:port"
+     * @return Response time in ms, or -1 if unreachable
+     */
+    private long checkTcpService(String address) {
+        String[] parts = address.split(":");
+        if (parts.length != 2) {
+            return -1;
+        }
+        
+        String host = parts[0];
+        int port;
+        try {
+            port = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+        
+        Socket socket = null;
+        try {
+            long startTime = System.currentTimeMillis();
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(host, port), timeout);
+            long endTime = System.currentTimeMillis();
+            return endTime - startTime;
+        } catch (IOException e) {
+            return -1;
+        } finally {
+            if (socket != null && !socket.isClosed()) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    // Ignore
+                }
+            }
+        }
+    }
+    
+    /**
+     * Check an SSL service
+     * @param address The address in format "host:port"
+     * @return Response time in ms, or -1 if unreachable
+     */
+    private long checkSslService(String address) {
+        String[] parts = address.split(":");
+        if (parts.length != 2) {
+            return -1;
+        }
+        
+        String host = parts[0];
+        int port;
+        try {
+            port = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+        
+        SSLSocket socket = null;
+        try {
+            long startTime = System.currentTimeMillis();
+            SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            socket = (SSLSocket) factory.createSocket();
+            socket.connect(new InetSocketAddress(host, port), timeout);
+            socket.startHandshake();
+            long endTime = System.currentTimeMillis();
+            return endTime - startTime;
+        } catch (IOException e) {
+            return -1;
+        } finally {
+            if (socket != null && !socket.isClosed()) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    // Ignore
+                }
+            }
+        }
+    }
+    
+    /**
+     * Check an SMTP service
+     * @param address The address in format "host:port"
+     * @return SMTP result
+     */
+    private SmtpResult checkSmtpService(String address) {
+        SmtpResult result = new SmtpResult();
+        String[] parts = address.split(":");
+        if (parts.length != 2) {
+            return result;
+        }
+        
+        String host = parts[0];
+        int port;
+        try {
+            port = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException e) {
+            return result;
+        }
+        
+        Socket socket = null;
+        try {
+            long startTime = System.currentTimeMillis();
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(host, port), timeout);
+            
+            // Read greeting
+            BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            String response = reader.readLine();
+            long endTime = System.currentTimeMillis();
+            
+            result.isUp = response != null && response.startsWith("220");
+            result.responseTime = endTime - startTime;
+            result.message = response;
+            
+            // Send QUIT command
+            OutputStream out = socket.getOutputStream();
+            out.write("QUIT\r\n".getBytes());
+            out.flush();
+            
+        } catch (IOException e) {
+            result.isUp = false;
+            result.responseTime = -1;
+            result.message = e.getMessage();
+        } finally {
+            if (socket != null && !socket.isClosed()) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    // Ignore
+                }
+            }
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Generate a simple HTML report of current service status
+     * @return HTML report
+     */
+    public String generateHtmlReport() {
+        StringBuilder html = new StringBuilder();
+        html.append("<!DOCTYPE html>\n");
+        html.append("<html lang=\"en\">\n");
+        html.append("<head>\n");
+        html.append("  <meta charset=\"UTF-8\">\n");
+        html.append("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+        html.append("  <title>Service Monitor Report</title>\n");
+        html.append("  <style>\n");
+        html.append("    body { font-family: Arial, sans-serif; margin: 20px; }\n");
+        html.append("    table { border-collapse: collapse; width: 100%; }\n");
+        html.append("    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }\n");
+        html.append("    th { background-color: #f2f2f2; }\n");
+        html.append("    tr.up { background-color: #dff0d8; }\n");
+        html.append("    tr.down { background-color: #f2dede; }\n");
+        html.append("    .status-up { color: green; font-weight: bold; }\n");
+        html.append("    .status-down { color: red; font-weight: bold; }\n");
+        html.append("  </style>\n");
+        html.append("</head>\n");
+        html.append("<body>\n");
+        html.append("  <h1>Service Monitor Report</h1>\n");
+        html.append("  <p>Generated at: ").append(LocalDateTime.now().format(
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append("</p>\n");
+        
+        html.append("  <h2>Current Status</h2>\n");
+        html.append("  <table>\n");
+        html.append("    <tr>\n");
+        html.append("      <th>Service</th>\n");
+        html.append("      <th>Type</th>\n");
+        html.append("      <th>Address</th>\n");
+        html.append("      <th>Status</th>\n");
+        html.append("      <th>Response Time</th>\n");
+        html.append("      <th>Last Checked</th>\n");
+        html.append("      <th>Uptime</th>\n");
+        html.append("    </tr>\n");
+        
+        for (String serviceName : serviceStatuses.keySet()) {
+            ServiceStatus status = serviceStatuses.get(serviceName);
+            html.append("    <tr class=\"").append(status.isUp ? "up" : "down").append("\">\n");
+            html.append("      <td>").append(serviceName).append("</td>\n");
+            html.append("      <td>").append(status.type).append("</td>\n");
+            html.append("      <td>").append(status.address).append("</td>\n");
+            html.append("      <td class=\"status-").append(status.isUp ? "up" : "down").append("\">")
+                .append(status.isUp ? "UP" : "DOWN").append("</td>\n");
+            html.append("      <td>").append(status.responseTime >= 0 ? status.responseTime + " ms" : "N/A").append("</td>\n");
+            html.append("      <td>").append(status.timestamp.format(
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append("</td>\n");
+            html.append("      <td>").append(status.getUptimePercentage()).append("%</td>\n");
+            html.append("    </tr>\n");
+        }
+        
+        html.append("  </table>\n");
+        html.append("</body>\n");
+        html.append("</html>");
+        
+        return html.toString();
+    }
+    
+    /**
+     * Enumeration of service types
+     */
+    public enum ServiceType {
+        HTTP,
+        TCP,
+        SSL,
+        SMTP
+    }
+    
+    /**
+     * Class to store service status
+     */
+    public class ServiceStatus {
+        private final String name;
+        private final ServiceType type;
+        private final String address;
+        private boolean isUp;
+        private LocalDateTime timestamp;
+        private long responseTime;
+        private int responseCode;
+        private String responseMessage;
+        private List<StatusRecord> history = new ArrayList<>();
+        
+        public ServiceStatus(String name, ServiceType type, String address) {
