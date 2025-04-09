@@ -1,0 +1,426 @@
+package com.networktools;
+
+import java.io.IOException;
+import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.TimeoutException;
+
+/**
+ * Basic Packet Sniffer using Pcap4J library
+ * Note: You'll need to add the Pcap4J library to your project:
+ * - Maven: org.pcap4j:pcap4j-core:1.8.2 and org.pcap4j:pcap4j-packetfactory-static:1.8.2
+ * - You'll also need the native libpcap library installed:
+ *   - Windows: WinPcap or Npcap
+ *   - Linux: libpcap
+ *   - macOS: libpcap
+ */
+public class PacketSniffer {
+
+    // Add the necessary import statements for Pcap4J here
+    /*
+    import org.pcap4j.core.NotOpenException;
+    import org.pcap4j.core.PacketListener;
+    import org.pcap4j.core.PcapAddress;
+    import org.pcap4j.core.PcapHandle;
+    import org.pcap4j.core.PcapNativeException;
+    import org.pcap4j.core.PcapNetworkInterface;
+    import org.pcap4j.core.PcapNetworkInterface.PromiscuousMode;
+    import org.pcap4j.core.PcapStat;
+    import org.pcap4j.core.Pcaps;
+    import org.pcap4j.packet.ArpPacket;
+    import org.pcap4j.packet.DnsPacket;
+    import org.pcap4j.packet.EthernetPacket;
+    import org.pcap4j.packet.IcmpV4CommonPacket;
+    import org.pcap4j.packet.IpV4Packet;
+    import org.pcap4j.packet.Packet;
+    import org.pcap4j.packet.TcpPacket;
+    import org.pcap4j.packet.UdpPacket;
+    import org.pcap4j.util.NifSelector;
+    */
+    
+    private static final String COUNT_KEY = "count";
+    private static final int COUNT = 50; // Number of packets to capture
+    private static final String READ_TIMEOUT_KEY = "readTimeout";
+    private static final int READ_TIMEOUT = 10; // ms
+    private static final String SNAPLEN_KEY = "snaplen";
+    private static final int SNAPLEN = 65536; // Capture all bytes
+    
+    public static void main(String[] args) throws Exception {
+        System.out.println("Packet Sniffer");
+        System.out.println("Note: This class requires the Pcap4J library and native libpcap.");
+        
+        // This is a demonstration class that requires external libraries
+        // The code below will show how to implement packet sniffing
+        System.out.println("To implement this, you need to add Pcap4J to your project:");
+        System.out.println("1. Add Maven dependencies:");
+        System.out.println("   - org.pcap4j:pcap4j-core:1.8.2");
+        System.out.println("   - org.pcap4j:pcap4j-packetfactory-static:1.8.2");
+        System.out.println("2. Install native libpcap library:");
+        System.out.println("   - Windows: WinPcap or Npcap");
+        System.out.println("   - Linux: libpcap");
+        System.out.println("   - macOS: libpcap");
+        System.out.println("\nImplementation steps are commented in the code.");
+        
+        /*
+        // Un-comment this block to use the packet sniffing functionality
+        // after adding the required dependencies
+        
+        // Select network interface
+        PcapNetworkInterface nif = getNetworkInterface();
+        if (nif == null) {
+            System.out.println("No network interface selected.");
+            return;
+        }
+        
+        System.out.println("\nStarting packet capture on interface: " + nif.getName());
+        
+        // Open PcapHandle
+        PcapHandle handle = nif.openLive(SNAPLEN, PromiscuousMode.PROMISCUOUS, READ_TIMEOUT);
+        
+        // Set a filter if needed (e.g., only TCP, only port 80, etc.)
+        // handle.setFilter("tcp port 80", BpfCompileMode.OPTIMIZE);
+        
+        // Create packet counter
+        final PacketCounter counter = new PacketCounter();
+        
+        // Create packet handler
+        PacketListener listener = new PacketListener() {
+            @Override
+            public void gotPacket(Packet packet) {
+                counter.incrementTotalCount();
+                
+                // Get timestamp
+                Date timestamp = new Date(handle.getTimestamp().getTime());
+                
+                // Process different packet types
+                if (packet.contains(EthernetPacket.class)) {
+                    counter.incrementEthernetCount();
+                    EthernetPacket ethernetPacket = packet.get(EthernetPacket.class);
+                    
+                    // Print Ethernet packet details
+                    System.out.println("\n[" + timestamp + "] ETHERNET: " +
+                            "src: " + ethernetPacket.getHeader().getSrcAddr() +
+                            " -> dst: " + ethernetPacket.getHeader().getDstAddr() +
+                            " type: " + ethernetPacket.getHeader().getType());
+                }
+                
+                // IPv4 packets
+                if (packet.contains(IpV4Packet.class)) {
+                    counter.incrementIpv4Count();
+                    IpV4Packet ipPacket = packet.get(IpV4Packet.class);
+                    InetAddress srcAddr = ipPacket.getHeader().getSrcAddr();
+                    InetAddress dstAddr = ipPacket.getHeader().getDstAddr();
+                    
+                    // Print IP packet details
+                    System.out.println("  IP: " +
+                            "src: " + srcAddr +
+                            " -> dst: " + dstAddr +
+                            " proto: " + ipPacket.getHeader().getProtocol());
+                }
+                
+                // TCP packets
+                if (packet.contains(TcpPacket.class)) {
+                    counter.incrementTcpCount();
+                    TcpPacket tcpPacket = packet.get(TcpPacket.class);
+                    int srcPort = tcpPacket.getHeader().getSrcPort().valueAsInt();
+                    int dstPort = tcpPacket.getHeader().getDstPort().valueAsInt();
+                    
+                    // Print TCP packet details
+                    System.out.println("    TCP: " +
+                            "src port: " + srcPort +
+                            " -> dst port: " + dstPort +
+                            " seq: " + tcpPacket.getHeader().getSequenceNumber() +
+                            " ack: " + tcpPacket.getHeader().getAcknowledgmentNumber() +
+                            " flags: " + getTcpFlags(tcpPacket));
+                    
+                    // For HTTP traffic (port 80), extract payload
+                    if (srcPort == 80 || dstPort == 80) {
+                        System.out.println("      HTTP Traffic Detected");
+                        if (tcpPacket.getPayload() != null) {
+                            byte[] payload = tcpPacket.getPayload().getRawData();
+                            if (payload.length > 0) {
+                                String content = new String(payload);
+                                // Look for HTTP headers
+                                if (content.startsWith("GET") || content.startsWith("POST") ||
+                                    content.startsWith("HTTP")) {
+                                    System.out.println("      HTTP Headers:");
+                                    // Print first line of the headers
+                                    int endOfLine = content.indexOf('\n');
+                                    if (endOfLine > 0) {
+                                        System.out.println("        " + content.substring(0, endOfLine));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // UDP packets
+                if (packet.contains(UdpPacket.class)) {
+                    counter.incrementUdpCount();
+                    UdpPacket udpPacket = packet.get(UdpPacket.class);
+                    int srcPort = udpPacket.getHeader().getSrcPort().valueAsInt();
+                    int dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
+                    
+                    // Print UDP packet details
+                    System.out.println("    UDP: " +
+                            "src port: " + srcPort +
+                            " -> dst port: " + dstPort);
+                    
+                    // For DNS traffic (port 53), extract queries
+                    if (srcPort == 53 || dstPort == 53 && packet.contains(DnsPacket.class)) {
+                        counter.incrementDnsCount();
+                        System.out.println("      DNS Traffic Detected");
+                    }
+                }
+                
+                // ICMP packets
+                if (packet.contains(IcmpV4CommonPacket.class)) {
+                    counter.incrementIcmpCount();
+                    IcmpV4CommonPacket icmpPacket = packet.get(IcmpV4CommonPacket.class);
+                    
+                    System.out.println("    ICMP: " +
+                            "type: " + icmpPacket.getHeader().getType() +
+                            " code: " + icmpPacket.getHeader().getCode());
+                }
+                
+                // ARP packets
+                if (packet.contains(ArpPacket.class)) {
+                    counter.incrementArpCount();
+                    ArpPacket arpPacket = packet.get(ArpPacket.class);
+                    
+                    System.out.println("  ARP: " +
+                            "operation: " + (arpPacket.getHeader().getOperation() == ArpPacket.Operation.REQUEST ? "REQUEST" : "REPLY") +
+                            " src MAC: " + arpPacket.getHeader().getSrcHardwareAddr() +
+                            " dst MAC: " + arpPacket.getHeader().getDstHardwareAddr() +
+                            " src IP: " + arpPacket.getHeader().getSrcProtocolAddr() +
+                            " dst IP: " + arpPacket.getHeader().getDstProtocolAddr());
+                }
+            }
+        };
+        
+        try {
+            // Start packet capture
+            handle.loop(COUNT, listener);
+            
+            // Print packet capture summary
+            PcapStat stats = handle.getStats();
+            System.out.println("\nPacket Capture Summary:");
+            System.out.println("Received packets: " + stats.getNumPacketsReceived());
+            System.out.println("Dropped packets: " + stats.getNumPacketsDropped());
+            
+            // Print packet counter summary
+            System.out.println("\nPacket Type Summary:");
+            System.out.println("Total packets: " + counter.getTotalCount());
+            System.out.println("Ethernet packets: " + counter.getEthernetCount());
+            System.out.println("IPv4 packets: " + counter.getIpv4Count());
+            System.out.println("TCP packets: " + counter.getTcpCount());
+            System.out.println("UDP packets: " + counter.getUdpCount());
+            System.out.println("ICMP packets: " + counter.getIcmpCount());
+            System.out.println("ARP packets: " + counter.getArpCount());
+            System.out.println("DNS packets: " + counter.getDnsCount());
+        } finally {
+            // Clean up
+            handle.close();
+        }
+        */
+    }
+    
+    /**
+     * Get TCP flags as a readable string
+     */
+    private static String getTcpFlags(Object tcpPacket) {
+        // Uncomment this when using with the Pcap4J library
+        /*
+        TcpPacket.TcpHeader header = ((TcpPacket)tcpPacket).getHeader();
+        StringBuilder flags = new StringBuilder();
+        
+        if (header.getUrg()) flags.append("URG ");
+        if (header.getAck()) flags.append("ACK ");
+        if (header.getPsh()) flags.append("PSH ");
+        if (header.getRst()) flags.append("RST ");
+        if (header.getSyn()) flags.append("SYN ");
+        if (header.getFin()) flags.append("FIN ");
+        
+        return flags.toString().trim();
+        */
+        return "FLAG_PLACEHOLDER";
+    }
+    
+    /**
+     * Select a network interface for capturing
+     */
+    private static Object getNetworkInterface() throws Exception {
+        // Uncomment this when using with the Pcap4J library
+        /*
+        // First, try to get interfaces list
+        List<PcapNetworkInterface> allDevs;
+        try {
+            allDevs = Pcaps.findAllDevs();
+        } catch (PcapNativeException e) {
+            throw new IOException(e.getMessage());
+        }
+        
+        if (allDevs == null || allDevs.isEmpty()) {
+            throw new IOException("No network interface found");
+        }
+        
+        // Show available network interfaces
+        System.out.println("Available Network Interfaces:");
+        int index = 0;
+        for (PcapNetworkInterface dev : allDevs) {
+            String description = dev.getDescription() != null ? dev.getDescription() : "No description";
+            System.out.println("[" + index++ + "]: " + dev.getName() + " (" + description + ")");
+            
+            // Print addresses
+            for (PcapAddress addr : dev.getAddresses()) {
+                if (addr.getAddress() != null) {
+                    System.out.println("  - Address: " + addr.getAddress());
+                }
+            }
+            System.out.println();
+        }
+        
+        // Let user select an interface
+        System.out.println("Select a network interface (0-" + (allDevs.size() - 1) + "):");
+        
+        // For non-interactive use, you can return a specific interface:
+        // return allDevs.get(0);  // Use first interface
+        
+        // For interactive use, use NifSelector:
+        NifSelector selector = new NifSelector();
+        return selector.selectNetworkInterface(); 
+        */
+        return null;
+    }
+    
+    /**
+     * Class to count different packet types
+     */
+    static class PacketCounter {
+        private int totalCount;
+        private int ethernetCount;
+        private int ipv4Count;
+        private int tcpCount;
+        private int udpCount;
+        private int icmpCount;
+        private int arpCount;
+        private int dnsCount;
+        
+        void incrementTotalCount() { totalCount++; }
+        void incrementEthernetCount() { ethernetCount++; }
+        void incrementIpv4Count() { ipv4Count++; }
+        void incrementTcpCount() { tcpCount++; }
+        void incrementUdpCount() { udpCount++; }
+        void incrementIcmpCount() { icmpCount++; }
+        void incrementArpCount() { arpCount++; }
+        void incrementDnsCount() { dnsCount++; }
+        
+        int getTotalCount() { return totalCount; }
+        int getEthernetCount() { return ethernetCount; }
+        int getIpv4Count() { return ipv4Count; }
+        int getTcpCount() { return tcpCount; }
+        int getUdpCount() { return udpCount; }
+        int getIcmpCount() { return icmpCount; }
+        int getArpCount() { return arpCount; }
+        int getDnsCount() { return dnsCount; }
+    }
+    
+    /**
+     * A simple packet analyzer that can be used without the Pcap4J library
+     * This uses the Java ProcessBuilder to run tcpdump/Wireshark command-line tools
+     */
+    public static class SimplePacketAnalyzer {
+        
+        public static void main(String[] args) {
+            String interfaceName = args.length > 0 ? args[0] : null;
+            int packetCount = args.length > 1 ? Integer.parseInt(args[1]) : 10;
+            
+            try {
+                capturePackets(interfaceName, packetCount);
+            } catch (Exception e) {
+                System.err.println("Error capturing packets: " + e.getMessage());
+            }
+        }
+        
+        /**
+         * Capture packets using tcpdump or tshark (Wireshark CLI)
+         */
+        public static void capturePackets(String interfaceName, int count) throws IOException {
+            List<String> command = new ArrayList<>();
+            
+            String osName = System.getProperty("os.name").toLowerCase();
+            
+            if (osName.contains("windows")) {
+                // On Windows, use tshark (Wireshark CLI)
+                command.add("tshark");
+                if (interfaceName != null) {
+                    command.add("-i");
+                    command.add(interfaceName);
+                }
+                command.add("-c");
+                command.add(String.valueOf(count));
+                command.add("-T");
+                command.add("fields");
+                command.add("-e");
+                command.add("frame.time");
+                command.add("-e");
+                command.add("eth.src");
+                command.add("-e");
+                command.add("eth.dst");
+                command.add("-e");
+                command.add("ip.src");
+                command.add("-e");
+                command.add("ip.dst");
+                command.add("-e");
+                command.add("tcp.srcport");
+                command.add("-e");
+                command.add("tcp.dstport");
+                command.add("-e");
+                command.add("udp.srcport");
+                command.add("-e");
+                command.add("udp.dstport");
+                command.add("-e");
+                command.add("ip.proto");
+            } else {
+                // On Linux/macOS, use tcpdump
+                command.add("sudo");
+                command.add("tcpdump");
+                if (interfaceName != null) {
+                    command.add("-i");
+                    command.add(interfaceName);
+                }
+                command.add("-c");
+                command.add(String.valueOf(count));
+                command.add("-n");  // Don't resolve hostnames
+                command.add("-v");  // Verbose output
+            }
+            
+            System.out.println("Running command: " + String.join(" ", command));
+            
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
+            processBuilder.redirectErrorStream(true);
+            
+            Process process = processBuilder.start();
+            
+            // Read output
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()));
+            
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println(line);
+            }
+            
+            try {
+                int exitCode = process.waitFor();
+                System.out.println("\nPacket capture completed with exit code: " + exitCode);
+            } catch (InterruptedException e) {
+                System.err.println("Packet capture was interrupted: " + e.getMessage());
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+}
