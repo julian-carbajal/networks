@@ -1,0 +1,374 @@
+package com.networktools;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.Socket;
+import java.net.SocketException;
+import java.net.URL;
+import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * NetworkMonitor - A comprehensive set of network monitoring tools
+ */
+public class NetworkMonitor {
+    
+    private static final int TIMEOUT = 5000; // 5 seconds
+    
+    public static void main(String[] args) {
+        NetworkMonitor monitor = new NetworkMonitor();
+        
+        // Display network interfaces
+        System.out.println("=== NETWORK INTERFACES ===");
+        monitor.displayNetworkInterfaces();
+        
+        // Ping test
+        System.out.println("\n=== PING TEST ===");
+        String host = "google.com";
+        PingResult pingResult = monitor.pingHost(host);
+        System.out.println("Ping to " + host + ": " + 
+                (pingResult.isReachable ? "Successful" : "Failed") + 
+                ", Average time: " + pingResult.averageTime + "ms");
+        
+        // Port scan
+        System.out.println("\n=== PORT SCAN ===");
+        String scanHost = "localhost";
+        List<Integer> openPorts = monitor.scanPorts(scanHost, 1, 100);
+        System.out.println("Open ports on " + scanHost + ": " + openPorts);
+        
+        // HTTP response time
+        System.out.println("\n=== HTTP RESPONSE TIME ===");
+        String url = "https://www.google.com";
+        HttpResult httpResult = monitor.checkHttpResponse(url);
+        System.out.println("HTTP Response from " + url + 
+                ": Code " + httpResult.responseCode + 
+                ", Time: " + httpResult.responseTime + "ms");
+        
+        // Traceroute
+        System.out.println("\n=== TRACEROUTE ===");
+        List<String> hops = monitor.performTraceroute(host);
+        System.out.println("Traceroute to " + host + ":");
+        for (int i = 0; i < hops.size(); i++) {
+            System.out.println((i + 1) + ": " + hops.get(i));
+        }
+        
+        // DNS lookup
+        System.out.println("\n=== DNS LOOKUP ===");
+        String domain = "github.com";
+        String ip = monitor.performDnsLookup(domain);
+        System.out.println("DNS Lookup for " + domain + ": " + ip);
+        
+        // Continuous network monitoring
+        System.out.println("\n=== STARTING CONTINUOUS MONITORING ===");
+        System.out.println("Press Ctrl+C to stop");
+        monitor.startContinuousMonitoring("google.com");
+    }
+    
+    /**
+     * Displays all network interfaces on the system
+     */
+    public void displayNetworkInterfaces() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = interfaces.nextElement();
+                if (!networkInterface.isUp()) continue;
+                
+                System.out.println("Interface: " + networkInterface.getDisplayName());
+                System.out.println("  Name: " + networkInterface.getName());
+                
+                byte[] mac = networkInterface.getHardwareAddress();
+                if (mac != null) {
+                    System.out.print("  MAC Address: ");
+                    for (int i = 0; i < mac.length; i++) {
+                        System.out.format("%02X%s", mac[i], (i < mac.length - 1) ? "-" : "");
+                    }
+                    System.out.println();
+                }
+                
+                System.out.println("  IP Addresses:");
+                Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    System.out.println("    " + address.getHostAddress());
+                }
+                System.out.println();
+            }
+        } catch (SocketException e) {
+            System.err.println("Error retrieving network interfaces: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Ping a host and return the result
+     * @param host The hostname to ping
+     * @return PingResult containing reachability and average time
+     */
+    public PingResult pingHost(String host) {
+        PingResult result = new PingResult();
+        
+        try {
+            InetAddress address = InetAddress.getByName(host);
+            result.isReachable = address.isReachable(TIMEOUT);
+            
+            // Perform multiple pings to get an average
+            int pingCount = 5;
+            long totalTime = 0;
+            int successCount = 0;
+            
+            for (int i = 0; i < pingCount; i++) {
+                long startTime = System.currentTimeMillis();
+                boolean reachable = address.isReachable(TIMEOUT);
+                long endTime = System.currentTimeMillis();
+                
+                if (reachable) {
+                    successCount++;
+                    totalTime += (endTime - startTime);
+                }
+                
+                try {
+                    Thread.sleep(200); // Short pause between pings
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            
+            if (successCount > 0) {
+                result.averageTime = totalTime / successCount;
+            }
+            
+            // For more accurate ping measurements, you could use Runtime.exec() to use the system's ping command
+            
+        } catch (IOException e) {
+            System.err.println("Error pinging host " + host + ": " + e.getMessage());
+            result.isReachable = false;
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Scan a range of ports on a host
+     * @param host The hostname to scan
+     * @param startPort The starting port number
+     * @param endPort The ending port number
+     * @return List of open ports
+     */
+    public List<Integer> scanPorts(String host, int startPort, int endPort) {
+        List<Integer> openPorts = new ArrayList<>();
+        
+        ExecutorService executor = Executors.newFixedThreadPool(10);
+        List<Future<PortScanResult>> futures = new ArrayList<>();
+        
+        for (int port = startPort; port <= endPort; port++) {
+            final int currentPort = port;
+            futures.add(executor.submit(() -> {
+                PortScanResult result = new PortScanResult();
+                result.port = currentPort;
+                
+                try (Socket socket = new Socket()) {
+                    socket.connect(new java.net.InetSocketAddress(host, currentPort), 1000);
+                    result.isOpen = true;
+                } catch (IOException e) {
+                    result.isOpen = false;
+                }
+                
+                return result;
+            }));
+        }
+        
+        for (Future<PortScanResult> future : futures) {
+            try {
+                PortScanResult result = future.get();
+                if (result.isOpen) {
+                    openPorts.add(result.port);
+                }
+            } catch (Exception e) {
+                System.err.println("Error in port scan: " + e.getMessage());
+            }
+        }
+        
+        executor.shutdown();
+        try {
+            executor.awaitTermination(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        return openPorts;
+    }
+    
+    /**
+     * Check HTTP response from a URL
+     * @param urlString The URL to check
+     * @return HttpResult containing response code and time
+     */
+    public HttpResult checkHttpResponse(String urlString) {
+        HttpResult result = new HttpResult();
+        
+        try {
+            URL url = new URL(urlString);
+            long startTime = System.currentTimeMillis();
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(TIMEOUT);
+            connection.setReadTimeout(TIMEOUT);
+            
+            result.responseCode = connection.getResponseCode();
+            long endTime = System.currentTimeMillis();
+            result.responseTime = endTime - startTime;
+            
+            // Check if we can get content
+            if (result.responseCode == 200) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                StringBuilder content = new StringBuilder();
+                String line;
+                
+                while ((line = reader.readLine()) != null) {
+                    content.append(line);
+                    // Just read a few lines to test
+                    if (content.length() > 1000) break;
+                }
+                reader.close();
+                
+                result.contentLength = content.length();
+            }
+            
+            connection.disconnect();
+            
+        } catch (IOException e) {
+            System.err.println("Error checking HTTP response for " + urlString + ": " + e.getMessage());
+            result.responseCode = -1;
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Perform a traceroute to a host
+     * @param host The hostname to trace
+     * @return List of hops (IP addresses)
+     */
+    public List<String> performTraceroute(String host) {
+        List<String> hops = new ArrayList<>();
+        
+        try {
+            Process process;
+            if (System.getProperty("os.name").toLowerCase().contains("windows")) {
+                process = Runtime.getRuntime().exec("tracert -h 15 " + host);
+            } else {
+                process = Runtime.getRuntime().exec("traceroute -m 15 " + host);
+            }
+            
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line;
+            // Skip the first line which is usually just header information
+            reader.readLine();
+            
+            while ((line = reader.readLine()) != null) {
+                // Simple parsing of traceroute output
+                if (!line.isEmpty() && Character.isDigit(line.charAt(0))) {
+                    // Extract the IP address
+                    String[] parts = line.split("\\s+");
+                    for (String part : parts) {
+                        if (part.contains(".") && part.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+                            hops.add(part);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            reader.close();
+            process.waitFor(10, TimeUnit.SECONDS);
+            
+        } catch (IOException | InterruptedException e) {
+            System.err.println("Error performing traceroute to " + host + ": " + e.getMessage());
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        
+        return hops;
+    }
+    
+    /**
+     * Perform a DNS lookup
+     * @param domain The domain to lookup
+     * @return IP address
+     */
+    public String performDnsLookup(String domain) {
+        try {
+            InetAddress address = InetAddress.getByName(domain);
+            return address.getHostAddress();
+        } catch (UnknownHostException e) {
+            System.err.println("Error performing DNS lookup for " + domain + ": " + e.getMessage());
+            return "Unknown";
+        }
+    }
+    
+    /**
+     * Start continuous monitoring of a host
+     * @param host The hostname to monitor
+     */
+    public void startContinuousMonitoring(String host) {
+        try {
+            while (true) {
+                // Gather metrics
+                PingResult pingResult = pingHost(host);
+                HttpResult httpResult = checkHttpResponse("https://" + host);
+                
+                // Display metrics
+                System.out.println("\n--- " + java.time.LocalDateTime.now() + " ---");
+                System.out.println("Host: " + host);
+                System.out.println("Ping: " + (pingResult.isReachable ? "Up" : "Down") + 
+                        ", Response Time: " + pingResult.averageTime + "ms");
+                System.out.println("HTTP: " + (httpResult.responseCode == 200 ? "OK" : "Error") + 
+                        ", Response Time: " + httpResult.responseTime + "ms");
+                
+                // Wait for next check
+                Thread.sleep(5000);
+            }
+        } catch (InterruptedException e) {
+            System.out.println("Continuous monitoring stopped.");
+            Thread.currentThread().interrupt();
+        }
+    }
+    
+    /**
+     * Inner class for ping results
+     */
+    static class PingResult {
+        boolean isReachable;
+        long averageTime;
+    }
+    
+    /**
+     * Inner class for port scan results
+     */
+    static class PortScanResult {
+        int port;
+        boolean isOpen;
+    }
+    
+    /**
+     * Inner class for HTTP results
+     */
+    static class HttpResult {
+        int responseCode;
+        long responseTime;
+        int contentLength;
+    }
+}
