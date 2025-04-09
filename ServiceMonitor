@@ -495,3 +495,112 @@ public class ServiceMonitor {
         private List<StatusRecord> history = new ArrayList<>();
         
         public ServiceStatus(String name, ServiceType type, String address) {
+            this.name = name;
+            this.type = type;
+            this.address = address;
+            this.timestamp = LocalDateTime.now();
+            this.isUp = false;
+            this.responseTime = -1;
+        }
+        
+        /**
+         * Add current status to history
+         * @param isUp Current up/down status
+         * @param responseTime Current response time
+         */
+        public void addToHistory(boolean isUp, long responseTime) {
+            StatusRecord record = new StatusRecord(isUp, responseTime, LocalDateTime.now());
+            history.add(0, record); // Add at the beginning
+            
+            // Trim history if it exceeds the maximum size
+            if (history.size() > historySize) {
+                history = history.subList(0, historySize);
+            }
+        }
+        
+        /**
+         * Calculate uptime percentage
+         * @return Uptime percentage (0-100)
+         */
+        public double getUptimePercentage() {
+            if (history.isEmpty()) {
+                return isUp ? 100.0 : 0.0;
+            }
+            
+            long upCount = history.stream().filter(r -> r.isUp).count();
+            return (double) upCount / history.size() * 100.0;
+        }
+        
+        /**
+         * Get average response time
+         * @return Average response time in milliseconds
+         */
+        public double getAverageResponseTime() {
+            if (history.isEmpty()) {
+                return responseTime;
+            }
+            
+            double sum = history.stream()
+                    .filter(r -> r.responseTime >= 0)
+                    .mapToLong(r -> r.responseTime)
+                    .sum();
+            
+            long count = history.stream()
+                    .filter(r -> r.responseTime >= 0)
+                    .count();
+            
+            return count > 0 ? sum / count : -1;
+        }
+    }
+    
+    /**
+     * Class to store a single status record
+     */
+    private class StatusRecord {
+        private final boolean isUp;
+        private final long responseTime;
+        private final LocalDateTime timestamp;
+        
+        public StatusRecord(boolean isUp, long responseTime, LocalDateTime timestamp) {
+            this.isUp = isUp;
+            this.responseTime = responseTime;
+            this.timestamp = timestamp;
+        }
+    }
+    
+    /**
+     * Result class for HTTP checks
+     */
+    private static class HttpResult {
+        boolean isUp;
+        int responseCode;
+        long responseTime;
+        String errorMessage;
+    }
+    
+    /**
+     * Result class for SMTP checks
+     */
+    private static class SmtpResult {
+        boolean isUp;
+        long responseTime;
+        String message;
+        
+        public SmtpResult() {
+            this.isUp = false;
+            this.responseTime = -1;
+        }
+    }
+    
+    /**
+     * Interface for service monitor listeners
+     */
+    public interface ServiceMonitorListener {
+        /**
+         * Called when a service's status changes
+         * @param serviceName Name of the service
+         * @param status Current status
+         */
+        void onServiceStatusChange(String serviceName, ServiceStatus status);
+    }
+}
